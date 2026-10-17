@@ -1,3 +1,9 @@
+# Note
+
+This was entirely slopped out by Claude Sonnet 5.5. I have no fucking idea what im doing but this shit is 52x faster and far far far less ram usage than the program its copying.
+
+Below is whatever description Claude wanted to make. Enjoy.
+
 # uvpad
 
 Fast, low-memory texture dilating (UV padding) tool, written in Rust.
