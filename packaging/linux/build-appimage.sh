@@ -57,7 +57,16 @@ export OUTPUT=$LDAI_OUTPUT
     --appdir "$appdir" \
     --desktop-file "$appdir/usr/share/applications/$id.desktop" \
     --icon-file "$appdir/usr/share/icons/hicolor/256x256/apps/$id.png" \
-    --plugin qt \
+    --plugin qt
+
+# The Qt plugin leaves out Wayland's buffer integrations, without which Qt
+# cannot use OpenGL on Wayland and aborts. Add them and their libraries.
+plugins=$("$QMAKE" -query QT_INSTALL_PLUGINS)
+cp -r "$plugins/wayland-graphics-integration-client" "$appdir/usr/plugins/"
+
+"$tools/linuxdeploy-$arch.AppImage" \
+    --appdir "$appdir" \
+    --deploy-deps-only "$appdir/usr/plugins/wayland-graphics-integration-client" \
     --output appimage
 
 echo "Built $LDAI_OUTPUT"

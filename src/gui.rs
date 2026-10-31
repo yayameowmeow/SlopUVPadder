@@ -37,6 +37,7 @@ pub mod qobject {
 
         fn uvpad_new_application(version: &str, icon_png: &[u8]) -> UniquePtr<QApplication>;
         fn uvpad_exec() -> i32;
+        fn uvpad_set_env(name: &str, value: &str);
         fn uvpad_copy_png(png: &[u8], with_image: bool);
     }
 
@@ -358,6 +359,11 @@ fn close_own_console() {
     }
 }
 
+/// Sets a variable for Qt, which on Windows does not see std::env::set_var.
+fn set_env(name: &str, value: &str) {
+    qobject::uvpad_set_env(name, value);
+}
+
 pub fn launch(input: Option<PathBuf>) -> Result<()> {
     #[cfg(windows)]
     close_own_console();
@@ -367,30 +373,24 @@ pub fn launch(input: Option<PathBuf>) -> Result<()> {
         .filter(|p| !p.as_os_str().is_empty());
     let _ = STARTUP.set(std::sync::Mutex::new(input));
 
-    // Qt refuses to decode images over 256 MB by default, which a large
-    // texture easily is; the previews are downscaled while decoding anyway.
-    if std::env::var_os("QT_IMAGEIO_MAXALLOC").is_none() {
-        std::env::set_var("QT_IMAGEIO_MAXALLOC", "0");
-    }
-
     // Image readers warn about every file with odd metadata (libpng: "eXIf:
     // invalid"), and the file dialog's previews read whole folders of them.
     // Failures still show in the window. Later rules win, so the user's
     // QT_LOGGING_RULES can turn them back on.
     let rules = std::env::var("QT_LOGGING_RULES").unwrap_or_default();
-    std::env::set_var("QT_LOGGING_RULES", format!("qt.gui.imageio=false;{rules}"));
+    set_env("QT_LOGGING_RULES", &format!("qt.gui.imageio=false;{rules}"));
 
     // An AppImage brings its own Qt, which cannot load the desktop's platform
     // theme plugin (KDE's, say); the portal still gives the desktop's dialogs.
     if std::env::var_os("APPIMAGE").is_some() && std::env::var_os("QT_QPA_PLATFORMTHEME").is_none()
     {
-        std::env::set_var("QT_QPA_PLATFORMTHEME", "xdgdesktopportal");
+        set_env("QT_QPA_PLATFORMTHEME", "xdgdesktopportal");
     }
 
     // Fusion follows the desktop's palette (light/dark) on every OS; the user
     // can still pick another style with QT_QUICK_CONTROLS_STYLE.
     if std::env::var_os("QT_QUICK_CONTROLS_STYLE").is_none() {
-        std::env::set_var("QT_QUICK_CONTROLS_STYLE", "Fusion");
+        set_env("QT_QUICK_CONTROLS_STYLE", "Fusion");
     }
 
     let icon = include_bytes!("../assets/uvpad-256.png");

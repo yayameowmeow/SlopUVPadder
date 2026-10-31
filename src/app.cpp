@@ -6,6 +6,7 @@
 #include <QtGui/QClipboard>
 #include <QtGui/QIcon>
 #include <QtGui/QImage>
+#include <QtGui/QImageReader>
 #include <QtGui/QPixmap>
 
 namespace {
@@ -24,6 +25,12 @@ QByteArray bytes(rust::Slice<const std::uint8_t> data)
 std::unique_ptr<QApplication> uvpad_new_application(rust::Str version,
                                                     rust::Slice<const std::uint8_t> icon_png)
 {
+    // Qt refuses to decode images over 256 MB by default, which a large
+    // texture easily is; the previews are downscaled while decoding anyway.
+    if (!qEnvironmentVariableIsSet("QT_IMAGEIO_MAXALLOC")) {
+        QImageReader::setAllocationLimit(0);
+    }
+
     auto app = std::make_unique<QApplication>(argc, argv);
     QApplication::setApplicationName(QStringLiteral("uvpad"));
     QApplication::setApplicationDisplayName(QStringLiteral("uvpad"));
@@ -41,6 +48,11 @@ std::unique_ptr<QApplication> uvpad_new_application(rust::Str version,
 int uvpad_exec()
 {
     return QApplication::exec();
+}
+
+void uvpad_set_env(rust::Str name, rust::Str value)
+{
+    qputenv(std::string(name).c_str(), QByteArray(value.data(), qsizetype(value.size())));
 }
 
 void uvpad_copy_png(rust::Slice<const std::uint8_t> png, bool with_image)

@@ -63,7 +63,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            meson ninja-build nasm pkg-config file xvfb \
+            meson ninja-build nasm pkg-config file xvfb weston libgl1-mesa-dri libegl-mesa0 \
             libgl-dev libegl-dev libfontconfig1 libfreetype6 libdbus-1-3 \
             libxkbcommon-dev libxkbcommon-x11-0 libxcb-cursor0 libxcb-icccm4 libxcb-image0 \
             libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 libxcb-shape0 libxcb-xinerama0 \
@@ -86,10 +86,23 @@ jobs:
         run: QT_QPA_PLATFORM=offscreen packaging/smoke-test.sh target/release/uvpad
       - name: AppImage
         run: packaging/linux/build-appimage.sh target/release/uvpad notices/gui-avif.txt
-      - name: Smoke test AppImage
+      - name: Smoke test AppImage (X11)
         env:
           APPIMAGE_EXTRACT_AND_RUN: 1
         run: packaging/smoke-test.sh xvfb-run -a "dist/uvpad-$VERSION-linux-${{ matrix.arch }}.AppImage"
+      # Under a headless Wayland compositor with software OpenGL, so a missing
+      # Wayland plugin (Qt then aborts) fails the build.
+      - name: Smoke test AppImage (Wayland)
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: 1
+          LIBGL_ALWAYS_SOFTWARE: 1
+        run: |
+          export XDG_RUNTIME_DIR=$RUNNER_TEMP/xdg
+          mkdir -m 700 -p "$XDG_RUNTIME_DIR"
+          weston --backend=headless-backend.so --socket=uvpad-test --idle-time=0 > "$RUNNER_TEMP/weston.log" 2>&1 &
+          for _ in $(seq 50); do [[ -S $XDG_RUNTIME_DIR/uvpad-test ]] && break; sleep 0.2; done
+          WAYLAND_DISPLAY=uvpad-test QT_QPA_PLATFORM=wayland \
+            packaging/smoke-test.sh "dist/uvpad-$VERSION-linux-${{ matrix.arch }}.AppImage"
 
       - name: Build CLI
         run: cargo build --locked --release --features avif --target-dir target/cli
