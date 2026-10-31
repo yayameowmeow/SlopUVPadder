@@ -24,7 +24,7 @@ Ready-to-run builds are on the [releases page](https://github.com/yayameowmeow/S
 | Windows x64 / ARM64 | `uvpad-…-windows-x64.zip`, `…-arm64.zip` (portable: unzip and run `uvpad.exe`) | `uvpad-cli-…-windows-….zip` |
 | macOS (Apple Silicon and Intel) | `uvpad-…-macos-universal.dmg` | `uvpad-cli-…-macos-universal.tar.gz` |
 
-- **Linux:** `chmod +x uvpad-*.AppImage` and run it; it works on any distro as new as Ubuntu 22.04. The file dialogs come from the desktop through xdg-desktop-portal (KDE's dialog on Plasma).
+- **Linux:** `chmod +x uvpad-*.AppImage` and run it; the x86_64 one works on any distro as new as Ubuntu 22.04, the ARM64 one on distros as new as Ubuntu 24.04. The file dialogs come from the desktop through xdg-desktop-portal (KDE's dialog on Plasma).
 - **Windows:** the builds are not code signed, so SmartScreen may warn on first start ("More info" > "Run anyway").
 - **macOS:** the app is not notarized, so the first time right-click it and choose **Open**. Needs macOS 12 or newer.
 - AVIF input is included everywhere except Windows.

@@ -58,9 +58,12 @@ runs:
         QT_DIR: ${{ runner.workspace }}/Qt
       run: |
         if [[ ! -d $QT_DIR/${{ inputs.qt-version }} ]]; then
+          # A venv, as some runners' Pythons refuse system-wide pip installs.
           python=$(command -v python3 || command -v python)
-          "$python" -m pip install --upgrade aqtinstall
-          "$python" -m aqt install-qt ${{ inputs.qt-host }} desktop ${{ inputs.qt-version }} ${{ inputs.qt-arch }} --outputdir "$QT_DIR"
+          "$python" -m venv "$RUNNER_TEMP/aqt"
+          aqt_python=$(ls "$RUNNER_TEMP"/aqt/bin/python "$RUNNER_TEMP"/aqt/Scripts/python.exe 2> /dev/null | head -n 1)
+          "$aqt_python" -m pip install --upgrade aqtinstall
+          "$aqt_python" -m aqt install-qt ${{ inputs.qt-host }} desktop ${{ inputs.qt-version }} ${{ inputs.qt-arch }} --outputdir "$QT_DIR"
         fi
         qmake=$(find "$QT_DIR/${{ inputs.qt-version }}" -path '*/bin/qmake' -o -path '*/bin/qmake.exe' | head -n 1)
         if [[ -z $qmake ]]; then
@@ -75,3 +78,10 @@ runs:
         echo "$bin" >> "$GITHUB_PATH"
         echo "QMAKE=$qmake" >> "$GITHUB_ENV"
         "$qmake" -query QT_VERSION
+        # The binaries do not record where Qt is, so let them (and
+        # linuxdeploy, which resolves libraries the same way) find it.
+        libs=$("$qmake" -query QT_INSTALL_LIBS)
+        case $RUNNER_OS in
+          Linux) echo "LD_LIBRARY_PATH=$libs" >> "$GITHUB_ENV" ;;
+          macOS) echo "DYLD_FRAMEWORK_PATH=$libs" >> "$GITHUB_ENV" ;;
+        esac

@@ -52,9 +52,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # The oldest supported Ubuntu, so the AppImage runs on most distros.
+          # The oldest Ubuntu that Qt's binaries run on, so the AppImage runs
+          # on as many distros as possible (Qt's ARM builds need 24.04).
           - { runner: ubuntu-22.04, arch: x86_64, qt-host: linux, qt-arch: linux_gcc_64 }
-          - { runner: ubuntu-22.04-arm, arch: aarch64, qt-host: linux_arm64, qt-arch: linux_gcc_arm64 }
+          - { runner: ubuntu-24.04-arm, arch: aarch64, qt-host: linux_arm64, qt-arch: linux_gcc_arm64 }
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
@@ -134,7 +135,10 @@ jobs:
           path: notices
 
       # No AVIF on Windows: building dav1d there needs another toolchain.
+      # Cargo runs in PowerShell, where Git Bash's own `link` cannot shadow
+      # the MSVC linker.
       - name: Build GUI
+        shell: pwsh
         run: cargo build --locked --release --features gui
       - name: Smoke test GUI
         run: QT_QPA_PLATFORM=offscreen packaging/smoke-test.sh target/release/uvpad.exe
@@ -150,6 +154,7 @@ jobs:
 
       # The CLI links the C runtime statically: one exe, nothing to install.
       - name: Build CLI
+        shell: pwsh
         env:
           RUSTFLAGS: -C target-feature=+crt-static
         run: cargo build --locked --release --target-dir target/cli
