@@ -15,7 +15,7 @@ use std::time::Instant;
 
 use anyhow::{Context, Result};
 use cxx_qt::{CxxQtType, Threading};
-use cxx_qt_lib::{QGuiApplication, QQmlApplicationEngine, QString, QUrl};
+use cxx_qt_lib::{QQmlApplicationEngine, QString, QUrl};
 
 use crate::{check_output, default_output, is_png, load, pad, run, write_rgba, Level};
 
@@ -26,6 +26,15 @@ pub mod qobject {
         type QString = cxx_qt_lib::QString;
         include!("cxx-qt-lib/qurl.h");
         type QUrl = cxx_qt_lib::QUrl;
+    }
+
+    // src/app.cpp
+    unsafe extern "C++" {
+        include!("uvpad/src/app.h");
+        type QApplication;
+
+        fn uvpad_new_application(version: &str) -> UniquePtr<QApplication>;
+        fn uvpad_exec() -> i32;
     }
 
     extern "RustQt" {
@@ -301,18 +310,17 @@ pub fn launch(input: Option<PathBuf>) -> Result<()> {
         std::env::set_var("QT_QUICK_CONTROLS_STYLE", "Fusion");
     }
 
-    let mut app = QGuiApplication::new();
-    if let Some(mut app) = app.as_mut() {
-        app.as_mut().set_application_name(&QString::from("uvpad"));
-        app.as_mut().set_application_display_name(&QString::from("uvpad"));
-        app.set_application_version(&QString::from(env!("CARGO_PKG_VERSION")));
+    let app = qobject::uvpad_new_application(env!("CARGO_PKG_VERSION"));
+    if app.is_null() {
+        anyhow::bail!("failed to start Qt");
     }
     let mut engine = QQmlApplicationEngine::new();
     if let Some(engine) = engine.as_mut() {
         engine.load(&QUrl::from(&QString::from("qrc:/qt/qml/uvpad/qml/main.qml")));
     }
-    let code = app.as_mut().map_or(1, |app| app.exec());
+    let code = qobject::uvpad_exec();
     drop(engine); // destroys the Padder, and with it the preview files
+    drop(app);
     if code != 0 {
         anyhow::bail!("Qt exited with code {code}");
     }
