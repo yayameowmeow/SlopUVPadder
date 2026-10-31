@@ -359,6 +359,22 @@ fn close_own_console() {
     }
 }
 
+/// Where the packages put Qt's QML modules, relative to the executable:
+/// next to it (Windows), ../qml (AppImage) or ../Resources/qml (macOS).
+fn bundled_qml_dirs() -> Vec<PathBuf> {
+    let Some(dir) = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(Path::to_path_buf))
+    else {
+        return Vec::new();
+    };
+    ["qml", "../qml", "../Resources/qml"]
+        .iter()
+        .map(|rel| dir.join(rel))
+        .filter(|path| path.join("QtQuick").is_dir())
+        .collect()
+}
+
 /// Sets a variable for Qt, which on Windows does not see std::env::set_var.
 fn set_env(name: &str, value: &str) {
     qobject::uvpad_set_env(name, value);
@@ -399,7 +415,15 @@ pub fn launch(input: Option<PathBuf>) -> Result<()> {
         anyhow::bail!("failed to start Qt");
     }
     let mut engine = QQmlApplicationEngine::new();
-    if let Some(engine) = engine.as_mut() {
+    if let Some(mut engine) = engine.as_mut() {
+        // Packaged builds bring their own QML modules. Search them first: an
+        // import path from the environment (another Qt's QML2_IMPORT_PATH, say)
+        // would otherwise win, and that Qt's plugins fail to load with this one.
+        for dir in bundled_qml_dirs() {
+            engine
+                .as_mut()
+                .add_import_path(&QString::from(dir.to_string_lossy().as_ref()));
+        }
         engine.load(&QUrl::from(&QString::from(
             "qrc:/qt/qml/uvpad/qml/main.qml",
         )));

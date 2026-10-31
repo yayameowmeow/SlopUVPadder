@@ -14,7 +14,8 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  QT_VERSION: 6.8.3
+  # 6.11 or newer: older Qt cannot give windows an icon on Wayland.
+  QT_VERSION: 6.11.3
   # AVIF: build dav1d from source, as distros this old do not have a new
   # enough one (statically linked, so nothing extra to ship).
   SYSTEM_DEPS_DAV1D_BUILD_INTERNAL: always
@@ -158,11 +159,17 @@ jobs:
       - name: Package GUI
         shell: pwsh
         run: ./packaging/windows/package.ps1 -Binary target/release/uvpad.exe -Notices notices/gui.txt -Arch ${{ matrix.arch }}
-      # Windows loads the DLLs next to the exe first, so this runs the packaged
-      # Qt and QML modules; only the offscreen platform plugin comes from Qt.
+      # Runs the packaged Qt and QML modules: Qt's own directories are taken
+      # off PATH so a DLL missing from the package fails the test, and a QML
+      # import path from the environment must not shadow the bundled modules.
+      # Only the offscreen platform plugin comes from the Qt install.
       - name: Smoke test package
         run: |
           export QT_QPA_PLATFORM=offscreen QT_PLUGIN_PATH="$("$QMAKE" -query QT_INSTALL_PLUGINS)"
+          mkdir -p "$RUNNER_TEMP/foreign/QtQuick/Dialogs"
+          printf 'module QtQuick.Dialogs\nplugin qtquickdialogsplugin\n' > "$RUNNER_TEMP/foreign/QtQuick/Dialogs/qmldir"
+          export QML_IMPORT_PATH=$(cygpath -w "$RUNNER_TEMP/foreign")
+          PATH=$(tr ':' '\n' <<< "$PATH" | grep -v '/Qt/' | paste -sd: -)
           packaging/smoke-test.sh "target/windows/uvpad-$VERSION-windows-${{ matrix.arch }}/uvpad.exe"
 
       # The CLI links the C runtime statically: one exe, nothing to install.
@@ -198,7 +205,7 @@ jobs:
           - { runner: macos-15-intel, arch: x86_64 }
     runs-on: ${{ matrix.runner }}
     env:
-      MACOSX_DEPLOYMENT_TARGET: "12.0"
+      MACOSX_DEPLOYMENT_TARGET: "13.0"
     steps:
       - uses: actions/checkout@v4
       - name: Install build tools

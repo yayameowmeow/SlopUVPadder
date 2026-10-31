@@ -26,7 +26,7 @@ Ready-to-run builds are on the [releases page](https://github.com/yayameowmeow/S
 
 - **Linux:** `chmod +x uvpad-*.AppImage` and run it; the x86_64 one works on any distro as new as Ubuntu 22.04, the ARM64 one on distros as new as Ubuntu 24.04. The file dialogs come from the desktop through xdg-desktop-portal (KDE's dialog on Plasma).
 - **Windows:** the builds are not code signed, so SmartScreen may warn on first start ("More info" > "Run anyway").
-- **macOS:** the app is not notarized, so the first time right-click it and choose **Open**. Needs macOS 12 or newer.
+- **macOS:** the app is not notarized, so the first time right-click it and choose **Open**. Needs macOS 13 or newer.
 - AVIF input is included everywhere except Windows.
 
 ## Building

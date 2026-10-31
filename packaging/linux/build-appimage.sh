@@ -42,10 +42,13 @@ install -Dm644 "$notices" "$appdir/usr/share/doc/uvpad/THIRD-PARTY-NOTICES.txt"
 mkdir -p "$root/dist"
 export PATH=$tools:$PATH
 export QMAKE=${QMAKE:-$(command -v qmake6 || command -v qmake)}
+plugins=$("$QMAKE" -query QT_INSTALL_PLUGINS)
 # QML imports to bundle are found by scanning the app's QML.
 export QML_SOURCES_PATHS=$root/qml
 # X11 is always bundled; Wayland too, so it runs natively on Wayland desktops.
-export EXTRA_PLATFORM_PLUGINS="libqwayland-egl.so;libqwayland-generic.so"
+# Qt 6.10 merged the Wayland platform plugins into one libqwayland.so.
+wayland=$(cd "$plugins/platforms" && ls libqwayland*.so | paste -sd ';' -)
+export EXTRA_PLATFORM_PLUGINS=$wayland
 # The xdg-desktop-portal theme, which gives the desktop's own file dialogs.
 export DEPLOY_PLATFORM_THEMES=1
 # No FUSE needed (CI containers, distros without libfuse2).
@@ -59,14 +62,21 @@ export OUTPUT=$LDAI_OUTPUT
     --icon-file "$appdir/usr/share/icons/hicolor/256x256/apps/$id.png" \
     --plugin qt
 
-# The Qt plugin leaves out Wayland's buffer integrations, without which Qt
-# cannot use OpenGL on Wayland and aborts. Add them and their libraries.
-plugins=$("$QMAKE" -query QT_INSTALL_PLUGINS)
-cp -r "$plugins/wayland-graphics-integration-client" "$appdir/usr/plugins/"
+# The Qt plugin does not reliably bundle Wayland's helper plugins: the shell
+# integration (window management), decorations, and the buffer integrations,
+# without which Qt cannot use OpenGL on Wayland and aborts. Add whichever are
+# missing, then their libraries.
+deps=()
+for dir in wayland-shell-integration wayland-decoration-client wayland-graphics-integration-client; do
+    if [[ ! -d $appdir/usr/plugins/$dir ]]; then
+        cp -r "$plugins/$dir" "$appdir/usr/plugins/"
+    fi
+    deps+=(--deploy-deps-only "$appdir/usr/plugins/$dir")
+done
 
 "$tools/linuxdeploy-$arch.AppImage" \
     --appdir "$appdir" \
-    --deploy-deps-only "$appdir/usr/plugins/wayland-graphics-integration-client" \
+    "${deps[@]}" \
     --output appimage
 
 echo "Built $LDAI_OUTPUT"
