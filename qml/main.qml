@@ -19,6 +19,12 @@ ApplicationWindow {
     readonly property bool hasInput: padder.inputUrl.toString() !== ""
     readonly property bool hasOutput: padder.outputUrl.toString() !== ""
 
+    // Previews are decoded at most this large (longest side). Qt decodes the
+    // whole PNG first, so a big texture costs 4 bytes per pixel while loading.
+    readonly property int previewLimit: fullRes.checked ? 16384 : 4096
+    readonly property bool downscaled: Math.max(padder.imageWidth, padder.imageHeight) > previewLimit
+    readonly property Image shown: showOutput && hasOutput ? outputImage : inputImage
+
     function fileName(url) {
         const s = decodeURIComponent(url.toString())
         return s.substring(s.lastIndexOf("/") + 1)
@@ -165,10 +171,21 @@ ApplicationWindow {
                 text: padder.status !== "" ? padder.status
                     : "Drop a PNG texture anywhere in the window, or press Ctrl+O"
             }
+            CheckBox {
+                id: fullRes
+                text: "Full-resolution preview"
+                visible: Math.max(padder.imageWidth, padder.imageHeight) > 4096
+                padding: 0
+                ToolTip.visible: hovered
+                ToolTip.delay: 600
+                ToolTip.text: "Show large textures at full size (up to 16384 px) instead of downscaled.\n"
+                              + "Needs about 4 bytes of memory per pixel for each of input and output."
+            }
             Label {
-                visible: preview.status === Image.Ready
+                visible: padder.imageWidth > 0
                 opacity: 0.7
-                text: preview.implicitWidth + " × " + preview.implicitHeight
+                text: padder.imageWidth + " × " + padder.imageHeight
+                      + (window.downscaled ? " (preview downscaled)" : "")
                       + "   " + Math.round(view.viewScale * 100) + "%"
             }
         }
@@ -199,13 +216,13 @@ ApplicationWindow {
         boundsBehavior: Flickable.StopAtBounds
 
         // Scale that fits the whole image, and the user's zoom on top of it.
-        readonly property real fitScale: preview.implicitWidth > 0
-            ? Math.min(width / preview.implicitWidth, height / preview.implicitHeight, 1) : 1
+        readonly property real fitScale: padder.imageWidth > 0
+            ? Math.min(width / padder.imageWidth, height / padder.imageHeight, 1) : 1
         property real zoom: 1
         readonly property real viewScale: fitScale * zoom
 
-        contentWidth: Math.max(width, preview.implicitWidth * viewScale)
-        contentHeight: Math.max(height, preview.implicitHeight * viewScale)
+        contentWidth: Math.max(width, padder.imageWidth * viewScale)
+        contentHeight: Math.max(height, padder.imageHeight * viewScale)
 
         function resetZoom() {
             zoom = 1
@@ -224,21 +241,33 @@ ApplicationWindow {
             contentY = Math.max(0, Math.min(cy, contentHeight - height))
         }
 
-        Image {
-            id: preview
-            // Both images have the same size, so flipping keeps the zoom and position.
-            source: window.showOutput && window.hasOutput ? padder.outputUrl : padder.inputUrl
-            asynchronous: true
-            cache: false
-            retainWhileLoading: true
-            fillMode: Image.Stretch
-            // Show pixels when zoomed in, so the padded edges can be inspected.
-            smooth: view.viewScale < 2
-            mipmap: view.viewScale < 1
-            anchors.centerIn: parent
-            width: implicitWidth * view.viewScale
-            height: implicitHeight * view.viewScale
+        // Both stay loaded, so flipping between them is instant and keeps the
+        // zoom and position (they have the same size).
+        PreviewImage {
+            id: inputImage
+            source: padder.inputUrl
+            visible: !(window.showOutput && window.hasOutput)
         }
+        PreviewImage {
+            id: outputImage
+            source: padder.outputUrl
+            visible: window.showOutput && window.hasOutput
+        }
+    }
+
+    component PreviewImage: Image {
+        asynchronous: true
+        cache: false
+        retainWhileLoading: true
+        fillMode: Image.Stretch
+        sourceSize: Qt.size(window.previewLimit, window.previewLimit)
+        // Show real pixels when zoomed in, so the padded edges can be inspected.
+        smooth: view.viewScale < 2 || window.downscaled
+        mipmap: view.viewScale < 1
+        anchors.centerIn: parent
+        // Laid out at the texture's real size, whatever size it was decoded at.
+        width: padder.imageWidth * view.viewScale
+        height: padder.imageHeight * view.viewScale
     }
 
     // Zoom gestures, in view coordinates; dragging still pans the Flickable below.
@@ -271,7 +300,7 @@ ApplicationWindow {
 
     BusyIndicator {
         anchors.centerIn: parent
-        running: padder.busy || preview.status === Image.Loading
+        running: padder.busy || window.shown.status === Image.Loading
         visible: running
     }
 

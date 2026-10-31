@@ -70,6 +70,7 @@ Drag a PNG onto the window (or press Ctrl+O). It is padded straight away and the
 - **Method** switches between nearest-pixel and GIMP UVPad (`--slower`) and re-pads the image.
 - **Compression** applies to the saved file.
 - **Input / Output** (or Space) flips between the original and the padded image at the same zoom.
+- Textures larger than 4096 px are previewed downscaled to keep memory low. Tick **Full-resolution preview** (shown only for such textures) to see them at full size, up to 16384 px. Qt decodes the whole PNG while loading a preview (4 bytes per pixel, for input and output), so very large textures need a few GB of free memory. Saving always writes the full-resolution result.
 - Mouse wheel or pinch zooms around the pointer, drag pans, double-click or `0` fits the image again. Pixels are shown unsmoothed when zoomed in, so the padded edges can be inspected.
 
 The preview is written to the system temp directory and deleted when the window closes. The style is Qt's Fusion, which follows the desktop's light/dark palette; set `QT_QUICK_CONTROLS_STYLE` to use another one. On Linux the file dialogs are native when a Qt platform theme is active (Plasma, or `QT_QPA_PLATFORMTHEME=xdgdesktopportal` elsewhere); otherwise Qt's own dialog is used.

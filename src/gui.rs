@@ -35,6 +35,8 @@ pub mod qobject {
         #[qproperty(QUrl, output_url, cxx_name = "outputUrl")]
         #[qproperty(QUrl, suggested_url, cxx_name = "suggestedUrl")]
         #[qproperty(QUrl, input_folder, cxx_name = "inputFolder")]
+        #[qproperty(i32, image_width, cxx_name = "imageWidth")]
+        #[qproperty(i32, image_height, cxx_name = "imageHeight")]
         #[qproperty(bool, slower)]
         #[qproperty(i32, compression)]
         type Padder = super::PadderRust;
@@ -81,6 +83,9 @@ pub struct PadderRust {
     output_url: QUrl,
     suggested_url: QUrl,
     input_folder: QUrl,
+    /// Size of the input (and output) texture, 0 if unknown.
+    image_width: i32,
+    image_height: i32,
     slower: bool,
     /// 0 fast, 1 default, 2 best (the order of the combo box)
     compression: i32,
@@ -110,6 +115,14 @@ fn to_url(path: &Path) -> QUrl {
 
 fn preview_file(job: u64) -> PathBuf {
     std::env::temp_dir().join(format!("uvpad-preview-{}-{job}.png", std::process::id()))
+}
+
+/// Width and height from the PNG header, without decoding the image.
+fn png_size(path: &Path) -> Option<(i32, i32)> {
+    let file = std::fs::File::open(path).ok()?;
+    let reader = png::Decoder::new(std::io::BufReader::new(file)).read_info().ok()?;
+    let info = reader.info();
+    Some((info.width.try_into().ok()?, info.height.try_into().ok()?))
 }
 
 fn file_name(path: &Path) -> String {
@@ -145,6 +158,9 @@ impl qobject::Padder {
             self.as_mut().set_input_folder(to_url(dir));
         }
         self.as_mut().set_suggested_url(to_url(&default_output(&input)));
+        let (width, height) = png_size(&input).unwrap_or((0, 0));
+        self.as_mut().set_image_width(width);
+        self.as_mut().set_image_height(height);
         self.as_mut().report(true, false, format!("Padding {}…", file_name(&input)));
 
         let thread = self.qt_thread();
@@ -234,6 +250,12 @@ pub fn launch(input: Option<PathBuf>) -> Result<()> {
         .map(|p| std::path::absolute(&p).unwrap_or(p))
         .filter(|p| !p.as_os_str().is_empty());
     let _ = STARTUP.set(std::sync::Mutex::new(input));
+
+    // Qt refuses to decode images over 256 MB by default, which a large
+    // texture easily is; the previews are downscaled while decoding anyway.
+    if std::env::var_os("QT_IMAGEIO_MAXALLOC").is_none() {
+        std::env::set_var("QT_IMAGEIO_MAXALLOC", "0");
+    }
 
     // Fusion follows the desktop's palette (light/dark) on every OS; the user
     // can still pick another style with QT_QUICK_CONTROLS_STYLE.
