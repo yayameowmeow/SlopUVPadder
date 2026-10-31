@@ -1,0 +1,77 @@
+name: Set up Rust and Qt
+description: Installs stable Rust and, if qt-arch is given, Qt (with aqtinstall) and puts qmake on PATH.
+
+inputs:
+  qt-version:
+    description: Qt version, e.g. 6.8.3
+    required: false
+    default: ""
+  qt-host:
+    description: aqtinstall host (linux, linux_arm64, windows, windows_arm64, mac)
+    required: false
+    default: ""
+  qt-arch:
+    description: aqtinstall arch (linux_gcc_64, linux_gcc_arm64, win64_msvc2022_64, win64_msvc2022_arm64, clang_64)
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: Install Rust
+      shell: bash
+      run: |
+        # Not every runner image (the ARM ones especially) comes with rustup.
+        if ! command -v rustup > /dev/null; then
+          if [[ $RUNNER_OS == Windows ]]; then
+            case $RUNNER_ARCH in
+              ARM64) triple=aarch64-pc-windows-msvc ;;
+              *) triple=x86_64-pc-windows-msvc ;;
+            esac
+            curl -fsSLo "$RUNNER_TEMP/rustup-init.exe" "https://static.rust-lang.org/rustup/dist/$triple/rustup-init.exe"
+            "$RUNNER_TEMP/rustup-init.exe" -y --profile minimal --default-toolchain none
+            cygpath -w "$USERPROFILE/.cargo/bin" >> "$GITHUB_PATH"
+            export PATH="$USERPROFILE/.cargo/bin:$PATH"
+          else
+            curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
+            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+            export PATH="$HOME/.cargo/bin:$PATH"
+          fi
+        fi
+        rustup toolchain install stable --profile minimal --no-self-update
+        rustup default stable
+        rustc --version
+
+    - name: Cache Qt
+      if: inputs.qt-arch != ''
+      uses: actions/cache@v4
+      with:
+        # The same path on every job, so builds from different runners of one
+        # OS refer to Qt by the same path (the macOS universal merge needs it).
+        path: ${{ runner.workspace }}/Qt
+        key: qt-${{ inputs.qt-host }}-${{ inputs.qt-arch }}-${{ inputs.qt-version }}
+
+    - name: Install Qt
+      if: inputs.qt-arch != ''
+      shell: bash
+      env:
+        QT_DIR: ${{ runner.workspace }}/Qt
+      run: |
+        if [[ ! -d $QT_DIR/${{ inputs.qt-version }} ]]; then
+          python=$(command -v python3 || command -v python)
+          "$python" -m pip install --upgrade aqtinstall
+          "$python" -m aqt install-qt ${{ inputs.qt-host }} desktop ${{ inputs.qt-version }} ${{ inputs.qt-arch }} --outputdir "$QT_DIR"
+        fi
+        qmake=$(find "$QT_DIR/${{ inputs.qt-version }}" -path '*/bin/qmake' -o -path '*/bin/qmake.exe' | head -n 1)
+        if [[ -z $qmake ]]; then
+          echo "::error::qmake not found under $QT_DIR"
+          exit 1
+        fi
+        bin=$(dirname "$qmake")
+        if [[ $RUNNER_OS == Windows ]]; then
+          bin=$(cygpath -w "$bin")
+          qmake=$(cygpath -w "$qmake")
+        fi
+        echo "$bin" >> "$GITHUB_PATH"
+        echo "QMAKE=$qmake" >> "$GITHUB_ENV"
+        "$qmake" -query QT_VERSION

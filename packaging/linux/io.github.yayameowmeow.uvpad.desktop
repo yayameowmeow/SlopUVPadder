@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=uvpad
+GenericName=Texture Padder
+Comment=Pad (dilate) the transparent areas of textures
+Exec=uvpad --gui %f
+Icon=io.github.yayameowmeow.uvpad
+Terminal=false
+Categories=Graphics;2DGraphics;
+MimeType=image/png;image/jpeg;image/jxl;image/webp;image/x-tga;image/tiff;image/bmp;image/gif;image/x-exr;image/vnd.radiance;image/x-dds;image/qoi;image/avif;
+Keywords=uv;padding;dilate;texture;bleed;
