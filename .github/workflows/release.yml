@@ -39,8 +39,9 @@ jobs:
           mkdir notices
           packaging/third-party.sh notices/cli.txt ""
           packaging/third-party.sh notices/cli-avif.txt avif
-          packaging/third-party.sh notices/gui.txt gui "$QT_VERSION"
-          packaging/third-party.sh notices/gui-avif.txt gui,avif "$QT_VERSION"
+          # "Qt 6": the Qt version differs between platforms (see windows).
+          packaging/third-party.sh notices/gui.txt gui 6
+          packaging/third-party.sh notices/gui-avif.txt gui,avif 6
       - uses: actions/upload-artifact@v4
         with:
           name: notices
@@ -128,7 +129,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { runner: windows-latest, arch: x64, msvc: amd64, qt-host: windows, qt-arch: win64_msvc2022_64 }
+          # aqtinstall cannot read the repository layout Qt uses for Windows
+          # x64 from 6.10.4 on; 6.10.3 is the newest it can install there.
+          - { runner: windows-latest, arch: x64, msvc: amd64, qt-version: 6.10.3, qt-host: windows, qt-arch: win64_msvc2022_64 }
           - { runner: windows-11-arm, arch: arm64, msvc: arm64, qt-host: windows_arm64, qt-arch: win64_msvc2022_arm64 }
     runs-on: ${{ matrix.runner }}
     steps:
@@ -138,7 +141,7 @@ jobs:
           arch: ${{ matrix.msvc }}
       - uses: ./.github/actions/setup
         with:
-          qt-version: ${{ env.QT_VERSION }}
+          qt-version: ${{ matrix.qt-version || env.QT_VERSION }}
           qt-host: ${{ matrix.qt-host }}
           qt-arch: ${{ matrix.qt-arch }}
       - name: Version
