@@ -304,6 +304,16 @@ pub fn launch(input: Option<PathBuf>) -> Result<()> {
         std::env::set_var("QT_IMAGEIO_MAXALLOC", "0");
     }
 
+    // Image readers warn about every file with odd metadata (libpng: "eXIf:
+    // invalid"), and the file dialog's previews read whole folders of them.
+    // Failures still show in the window. Later rules win, so the user's
+    // QT_LOGGING_RULES can turn them back on.
+    let rules = std::env::var("QT_LOGGING_RULES").unwrap_or_default();
+    std::env::set_var(
+        "QT_LOGGING_RULES",
+        format!("qt.gui.imageio=false;{rules}"),
+    );
+
     // Fusion follows the desktop's palette (light/dark) on every OS; the user
     // can still pick another style with QT_QUICK_CONTROLS_STYLE.
     if std::env::var_os("QT_QUICK_CONTROLS_STYLE").is_none() {
