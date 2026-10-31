@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: Test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+      - name: Check formatting
+        if: runner.os == 'Linux'
+        run: |
+          rustup component add rustfmt
+          cargo fmt --check
+      - name: Test
+        run: cargo test --locked --release
+      - name: Pad the test texture
+        shell: bash
+        run: |
+          cargo run --locked --release -- tests/data/islands.png --output "$RUNNER_TEMP/padded.png"
+          test -s "$RUNNER_TEMP/padded.png"

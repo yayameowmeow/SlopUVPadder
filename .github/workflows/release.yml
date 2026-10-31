@@ -1,0 +1,309 @@
+name: Release builds
+
+# Pull requests build (and smoke test) every package; a v* tag also puts them
+# in a draft GitHub release, which is published by hand.
+on:
+  push:
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  # 6.11 or newer: older Qt cannot give windows an icon on Wayland.
+  QT_VERSION: 6.11.3
+  # AVIF: build dav1d from source, as distros this old do not have a new
+  # enough one (statically linked, so nothing extra to ship).
+  SYSTEM_DEPS_DAV1D_BUILD_INTERNAL: always
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  notices:
+    name: Third-party notices
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-about
+      - name: Generate
+        run: |
+          mkdir notices
+          packaging/third-party.sh notices/cli.txt ""
+          packaging/third-party.sh notices/cli-avif.txt avif
+          # "Qt 6": the Qt version differs between platforms (see windows).
+          packaging/third-party.sh notices/gui.txt gui 6
+          packaging/third-party.sh notices/gui-avif.txt gui,avif 6
+      - uses: actions/upload-artifact@v4
+        with:
+          name: notices
+          path: notices
+
+  linux:
+    name: Linux ${{ matrix.arch }}
+    needs: notices
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The oldest Ubuntu that Qt's binaries run on, so the AppImage runs
+          # on as many distros as possible (Qt's ARM builds need 24.04).
+          - { runner: ubuntu-22.04, arch: x86_64, qt-host: linux, qt-arch: linux_gcc_64 }
+          - { runner: ubuntu-24.04-arm, arch: aarch64, qt-host: linux_arm64, qt-arch: linux_gcc_arm64 }
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build tools and Qt's system libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            meson ninja-build nasm pkg-config file xvfb weston libgl1-mesa-dri libegl-mesa0 \
+            libgl-dev libegl-dev libfontconfig1 libfreetype6 libdbus-1-3 \
+            libxkbcommon-dev libxkbcommon-x11-0 libxcb-cursor0 libxcb-icccm4 libxcb-image0 \
+            libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 libxcb-shape0 libxcb-xinerama0 \
+            libxcb-xkb1 libwayland-client0 libwayland-cursor0 libwayland-egl1
+      - uses: ./.github/actions/setup
+        with:
+          qt-version: ${{ env.QT_VERSION }}
+          qt-host: ${{ matrix.qt-host }}
+          qt-arch: ${{ matrix.qt-arch }}
+      - name: Version
+        run: echo "VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)" >> "$GITHUB_ENV"
+      - uses: actions/download-artifact@v4
+        with:
+          name: notices
+          path: notices
+
+      - name: Build GUI
+        run: cargo build --locked --release --features gui,avif
+      - name: Smoke test GUI
+        run: QT_QPA_PLATFORM=offscreen packaging/smoke-test.sh target/release/uvpad
+      - name: AppImage
+        run: packaging/linux/build-appimage.sh target/release/uvpad notices/gui-avif.txt
+      - name: Smoke test AppImage (X11)
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: 1
+        run: packaging/smoke-test.sh xvfb-run -a "dist/uvpad-$VERSION-linux-${{ matrix.arch }}.AppImage"
+      # Under a headless Wayland compositor with software OpenGL, so a missing
+      # Wayland plugin (Qt then aborts) fails the build.
+      - name: Smoke test AppImage (Wayland)
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: 1
+          LIBGL_ALWAYS_SOFTWARE: 1
+        run: |
+          export XDG_RUNTIME_DIR=$RUNNER_TEMP/xdg
+          mkdir -m 700 -p "$XDG_RUNTIME_DIR"
+          weston --backend=headless-backend.so --socket=uvpad-test --idle-time=0 > "$RUNNER_TEMP/weston.log" 2>&1 &
+          for _ in $(seq 50); do [[ -S $XDG_RUNTIME_DIR/uvpad-test ]] && break; sleep 0.2; done
+          WAYLAND_DISPLAY=uvpad-test QT_QPA_PLATFORM=wayland \
+            packaging/smoke-test.sh "dist/uvpad-$VERSION-linux-${{ matrix.arch }}.AppImage"
+      # And on a current distro: newer system libraries meeting the bundled
+      # (older) ones is where AppImages usually break.
+      - name: Smoke test AppImage (Arch Linux)
+        if: matrix.arch == 'x86_64'
+        run: |
+          docker run --rm -v "$PWD:/w" -w /w -e APPIMAGE_EXTRACT_AND_RUN=1 archlinux:latest bash -c "
+            pacman -Syu --noconfirm --needed xorg-server-xvfb mesa fontconfig freetype2 harfbuzz \
+              ttf-dejavu libx11 libxcb > /dev/null &&
+            packaging/smoke-test.sh xvfb-run -a dist/uvpad-$VERSION-linux-x86_64.AppImage"
+
+      - name: Build CLI
+        run: cargo build --locked --release --features avif --target-dir target/cli
+      - name: Package CLI
+        run: |
+          name=uvpad-cli-$VERSION-linux-${{ matrix.arch }}
+          mkdir -p "target/$name" dist
+          cp target/cli/release/uvpad LICENSE README.md "target/$name/"
+          cp notices/cli-avif.txt "target/$name/THIRD-PARTY-NOTICES.txt"
+          "target/$name/uvpad" tests/data/islands.png --output "$RUNNER_TEMP/padded.png"
+          tar -C target -czf "dist/$name.tar.gz" "$name"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-linux-${{ matrix.arch }}
+          path: dist/*
+
+  windows:
+    name: Windows ${{ matrix.arch }}
+    needs: notices
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # aqtinstall cannot read the repository layout Qt uses for Windows
+          # x64 from 6.10.4 on; 6.10.3 is the newest it can install there.
+          - { runner: windows-latest, arch: x64, msvc: amd64, qt-version: 6.10.3, qt-host: windows, qt-arch: win64_msvc2022_64 }
+          - { runner: windows-11-arm, arch: arm64, msvc: arm64, qt-host: windows_arm64, qt-arch: win64_msvc2022_arm64 }
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: ${{ matrix.msvc }}
+      - uses: ./.github/actions/setup
+        with:
+          qt-version: ${{ matrix.qt-version || env.QT_VERSION }}
+          qt-host: ${{ matrix.qt-host }}
+          qt-arch: ${{ matrix.qt-arch }}
+      - name: Version
+        run: echo "VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)" >> "$GITHUB_ENV"
+      - uses: actions/download-artifact@v4
+        with:
+          name: notices
+          path: notices
+
+      # No AVIF on Windows: building dav1d there needs another toolchain.
+      # Cargo runs in PowerShell, where Git Bash's own `link` cannot shadow
+      # the MSVC linker.
+      - name: Build GUI
+        shell: pwsh
+        run: cargo build --locked --release --features gui
+      - name: Smoke test GUI
+        run: QT_QPA_PLATFORM=offscreen packaging/smoke-test.sh target/release/uvpad.exe
+      - name: Package GUI
+        shell: pwsh
+        run: ./packaging/windows/package.ps1 -Binary target/release/uvpad.exe -Notices notices/gui.txt -Arch ${{ matrix.arch }}
+      # Runs the packaged Qt and QML modules: Qt's own directories are taken
+      # off PATH so a DLL missing from the package fails the test, and a QML
+      # import path from the environment must not shadow the bundled modules.
+      # Only the offscreen platform plugin comes from the Qt install.
+      - name: Smoke test package
+        run: |
+          export QT_QPA_PLATFORM=offscreen QT_PLUGIN_PATH="$("$QMAKE" -query QT_INSTALL_PLUGINS)"
+          mkdir -p "$RUNNER_TEMP/foreign/QtQuick/Dialogs"
+          printf 'module QtQuick.Dialogs\nplugin qtquickdialogsplugin\n' > "$RUNNER_TEMP/foreign/QtQuick/Dialogs/qmldir"
+          export QML_IMPORT_PATH=$(cygpath -w "$RUNNER_TEMP/foreign")
+          PATH=$(tr ':' '\n' <<< "$PATH" | grep -v '/Qt/' | paste -sd: -)
+          packaging/smoke-test.sh "target/windows/uvpad-$VERSION-windows-${{ matrix.arch }}/uvpad.exe"
+
+      # The CLI links the C runtime statically: one exe, nothing to install.
+      - name: Build CLI
+        shell: pwsh
+        env:
+          RUSTFLAGS: -C target-feature=+crt-static
+        run: cargo build --locked --release --target-dir target/cli
+      - name: Package CLI
+        shell: pwsh
+        run: |
+          $name = "uvpad-cli-$env:VERSION-windows-${{ matrix.arch }}"
+          New-Item -ItemType Directory -Force "target/$name", dist | Out-Null
+          Copy-Item target/cli/release/uvpad.exe, README.md "target/$name/"
+          Copy-Item LICENSE "target/$name/LICENSE.txt"
+          Copy-Item notices/cli.txt "target/$name/THIRD-PARTY-NOTICES.txt"
+          & "target/$name/uvpad.exe" tests/data/islands.png --output "$env:RUNNER_TEMP/padded.png"
+          if ($LASTEXITCODE -ne 0) { throw "CLI failed" }
+          Compress-Archive -Path "target/$name" -DestinationPath "dist/$name.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-windows-${{ matrix.arch }}
+          path: dist/*
+
+  macos-build:
+    name: macOS ${{ matrix.arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: macos-15, arch: arm64 }
+          - { runner: macos-15-intel, arch: x86_64 }
+    runs-on: ${{ matrix.runner }}
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "13.0"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build tools
+        run: brew install meson ninja nasm
+      - uses: ./.github/actions/setup
+        with:
+          qt-version: ${{ env.QT_VERSION }}
+          qt-host: mac
+          qt-arch: clang_64
+      - name: Build GUI
+        run: cargo build --locked --release --features gui,avif
+      - name: Smoke test GUI
+        run: QT_QPA_PLATFORM=offscreen packaging/smoke-test.sh target/release/uvpad
+      - name: Build CLI
+        run: cargo build --locked --release --features avif --target-dir target/cli
+      - name: Collect
+        run: |
+          mkdir bin
+          cp target/release/uvpad bin/uvpad-gui
+          cp target/cli/release/uvpad bin/uvpad-cli
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-bin-${{ matrix.arch }}
+          path: bin
+
+  macos-package:
+    name: macOS universal
+    needs: [notices, macos-build]
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+        with:
+          qt-version: ${{ env.QT_VERSION }}
+          qt-host: mac
+          qt-arch: clang_64
+      - name: Version
+        run: echo "VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)" >> "$GITHUB_ENV"
+      - uses: actions/download-artifact@v4
+        with:
+          name: notices
+          path: notices
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: macos-bin-*
+          path: bin
+      - name: App and disk image
+        run: |
+          chmod +x bin/*/*
+          packaging/macos/build-app.sh notices/gui-avif.txt bin/macos-bin-arm64/uvpad-gui bin/macos-bin-x86_64/uvpad-gui
+      - name: Smoke test app
+        run: QT_QPA_PLATFORM=offscreen QT_PLUGIN_PATH="$(qmake -query QT_INSTALL_PLUGINS)" packaging/smoke-test.sh target/macos/uvpad.app/Contents/MacOS/uvpad
+      - name: Package CLI
+        run: |
+          name=uvpad-cli-$VERSION-macos-universal
+          mkdir -p "target/$name"
+          lipo -create bin/macos-bin-arm64/uvpad-cli bin/macos-bin-x86_64/uvpad-cli -output "target/$name/uvpad"
+          lipo -info "target/$name/uvpad"
+          codesign --force --sign - "target/$name/uvpad"
+          cp LICENSE README.md "target/$name/"
+          cp notices/cli-avif.txt "target/$name/THIRD-PARTY-NOTICES.txt"
+          "target/$name/uvpad" tests/data/islands.png --output "$RUNNER_TEMP/padded.png"
+          tar -C target -czf "dist/$name.tar.gz" "$name"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-macos-universal
+          path: dist/*
+
+  release:
+    name: Draft release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [linux, windows, macos-package]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: dist-*
+          merge-multiple: true
+          path: dist
+      - name: Checksums
+        run: cd dist && sha256sum * > SHA256SUMS.txt && cat SHA256SUMS.txt
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" \
+            --draft --generate-notes --title "uvpad ${GITHUB_REF_NAME#v}"

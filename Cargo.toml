@@ -1,8 +1,11 @@
 [package]
 name = "uvpad"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
-description = "Fast, low-memory texture dilating (UV padding) tool, a Rust port of meir/uvpad"
+rust-version = "1.88"
+description = "Fast, low-memory texture dilating (UV padding) tool, inspired by meir/uvpad"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/yayameowmeow/SlopUVPadder"
 readme = "README.md"
 
 [dependencies]
@@ -10,6 +13,26 @@ anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 png = "0.17"
 rayon = "1"
+# Inputs other than PNG (PNG itself keeps the faster path through `png`).
+image = { version = "0.25", default-features = false, features = ["rayon", "bmp", "dds", "exr", "ff", "gif", "hdr", "ico", "jpeg", "pnm", "qoi", "tga", "tiff", "webp"] }
+jxl-oxide = { version = "0.12", features = ["image"] }
+cxx = { version = "1", optional = true }
+cxx-qt = { version = "0.10", optional = true }
+cxx-qt-lib = { version = "0.10", optional = true, features = ["qt_full"] }
+
+[build-dependencies]
+cxx-qt-build = { version = "0.10", optional = true, features = ["link_qt_object_files"] }
+
+# The exe's icon on Windows.
+[target.'cfg(windows)'.build-dependencies]
+embed-resource = "3"
+
+[features]
+default = []
+# Qt 6 / QML desktop UI, opened when no input is given (or with --gui). Needs Qt 6 (qmake6) at build time.
+gui = ["dep:cxx", "dep:cxx-qt", "dep:cxx-qt-lib", "dep:cxx-qt-build"]
+# AVIF input. Needs the dav1d library (Arch: `dav1d`) and pkg-config at build time.
+avif = ["image/avif-native"]
 
 [profile.release]
 opt-level = 3
