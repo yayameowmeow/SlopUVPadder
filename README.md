@@ -33,6 +33,14 @@ cargo install --path . --features gui
 
 The build finds Qt through `qmake6`/`qmake` on `PATH`; set `QMAKE=/path/to/qmake6` to pick a specific install.
 
+### AVIF input
+
+AVIF decoding uses the dav1d library, so it is a separate feature that needs dav1d and pkg-config at build time (Arch: `sudo pacman -S --needed dav1d pkgconf`):
+
+```
+cargo install --path . --features gui,avif
+```
+
 ## Usage
 
 ```
@@ -42,21 +50,29 @@ uvpad ./image.png
 This writes `./image_padded.png` next to the input.
 
 ```
-Usage: uvpad [OPTIONS] <INPUT>
+Usage: uvpad [OPTIONS] [INPUT]
 
 Arguments:
-  <INPUT>  Input PNG image (optional with --gui)
+  [INPUT]  Input image: PNG, JPEG, JPEG XL, WebP, TGA, TIFF, BMP, GIF, EXR, HDR, DDS, QOI, ICO, PNM (and AVIF when built with `--features avif`). Optional with --gui
 
 Options:
       --gui                      Open the graphical interface: drop an image in, preview the result, save it
-      --output <FILE>            Output image file [default: <input>_padded.<ext>]
+      --output <FILE>            Output PNG file [default: <input>_padded.png]
       --slower                   Use the GIMP UVPad look (iterated neighbour averaging) instead of nearest-pixel fill
       --compression <COMPRESSION>  PNG compression of the output: fast is quickest, best is smallest [default: fast] [possible values: fast, default, best]
   -h, --help                     Print help
   -V, --version                  Print version
 ```
 
-Input must be a PNG, and the output is always a PNG (RGB, since the result is fully opaque).
+The output is always a PNG (RGB, since the result is fully opaque).
+
+### Input formats
+
+PNG, JPEG, JPEG XL, WebP, TGA, TIFF, BMP, GIF, OpenEXR, Radiance HDR, DDS, QOI, ICO, PNM/PAM and farbfeld, plus AVIF with the `avif` feature. The format is detected from the file's content; only TGA, which has no signature, relies on the `.tga` extension.
+
+- Padding fills transparent pixels, so formats without alpha (JPEG, most BMPs) come out unchanged.
+- PNG has its own, fastest decoding path. Other formats are decoded with the [`image`](https://crates.io/crates/image) crate ([`jxl-oxide`](https://crates.io/crates/jxl-oxide) for JPEG XL) and converted to 8-bit RGBA, which can briefly need a second buffer for formats that are not 8-bit RGBA already.
+- 16-bit and float images (EXR, HDR) are converted to 8 bits per channel without tone mapping, so values outside 0–1 are clipped.
 
 ### GUI
 
@@ -65,15 +81,15 @@ uvpad --gui              # empty window
 uvpad --gui ./image.png  # opens with this image already padded
 ```
 
-Drag a PNG onto the window (or press Ctrl+O). It is padded straight away and the result is shown; save it with **Save…** (Ctrl+S), which opens the system file dialog with `<input>_padded.png` filled in.
+Drag a texture in any of the input formats onto the window (or press Ctrl+O). It is padded straight away and the result is shown; save it with **Save…** (Ctrl+S), which opens the system file dialog with `<input>_padded.png` filled in.
 
 - **Method** switches between nearest-pixel and GIMP UVPad (`--slower`) and re-pads the image.
 - **Compression** applies to the saved file.
 - **Input / Output** (or Space) flips between the original and the padded image at the same zoom.
-- Textures larger than 4096 px are previewed downscaled to keep memory low. Tick **Full-resolution preview** (shown only for such textures) to see them at full size, up to 16384 px. Qt decodes the whole PNG while loading a preview (4 bytes per pixel, for input and output), so very large textures need a few GB of free memory. Saving always writes the full-resolution result.
+- Textures larger than 4096 px are previewed downscaled to keep memory low. Tick **Full-resolution preview** (shown only for such textures) to see them at full size, up to 16384 px. Qt decodes the whole image while loading a preview (4 bytes per pixel, for input and output), so very large textures need a few GB of free memory. Saving always writes the full-resolution result.
 - Mouse wheel or pinch zooms around the pointer, drag pans, double-click or `0` fits the image again. Pixels are shown unsmoothed when zoomed in, so the padded edges can be inspected.
 
-The preview is written to the system temp directory and deleted when the window closes. The style is Qt's Fusion, which follows the desktop's light/dark palette; set `QT_QUICK_CONTROLS_STYLE` to use another one. On Linux the file dialogs are native when a Qt platform theme is active (Plasma, or `QT_QPA_PLATFORMTHEME=xdgdesktopportal` elsewhere); otherwise Qt's own dialog is used.
+The preview is written to the system temp directory and deleted when the window closes. Inputs that are not PNGs get a PNG preview there as well, so the window can show every format whatever Qt image plugins are installed. The style is Qt's Fusion, which follows the desktop's light/dark palette; set `QT_QUICK_CONTROLS_STYLE` to use another one. On Linux the file dialogs are native when a Qt platform theme is active (Plasma, or `QT_QPA_PLATFORMTHEME=xdgdesktopportal` elsewhere); otherwise Qt's own dialog is used.
 
 ## Algorithms
 

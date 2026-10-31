@@ -50,7 +50,10 @@ ApplicationWindow {
         id: openDialog
         title: "Open texture"
         fileMode: FileDialog.OpenFile
-        nameFilters: ["PNG images (*.png)", "All files (*)"]
+        nameFilters: [
+            "Images (*.png *.jpg *.jpeg *.jxl *.webp *.tga *.tif *.tiff *.bmp *.gif *.exr *.hdr *.dds *.qoi *.ico *.pnm *.pbm *.pgm *.ppm *.pam *.ff *.avif)",
+            "All files (*)"
+        ]
         currentFolder: padder.inputFolder
         onAccepted: window.openImage(selectedFile)
     }
@@ -169,7 +172,7 @@ ApplicationWindow {
                 elide: Text.ElideMiddle
                 color: padder.failed ? "#e5484d" : palette.windowText
                 text: padder.status !== "" ? padder.status
-                    : "Drop a PNG texture anywhere in the window, or press Ctrl+O"
+                    : "Drop a texture anywhere in the window, or press Ctrl+O"
             }
             CheckBox {
                 id: fullRes
@@ -245,7 +248,7 @@ ApplicationWindow {
         // zoom and position (they have the same size).
         PreviewImage {
             id: inputImage
-            source: padder.inputUrl
+            source: padder.inputPreviewUrl
             visible: !(window.showOutput && window.hasOutput)
         }
         PreviewImage {
@@ -263,7 +266,8 @@ ApplicationWindow {
         sourceSize: Qt.size(window.previewLimit, window.previewLimit)
         // Show real pixels when zoomed in, so the padded edges can be inspected.
         smooth: view.viewScale < 2 || window.downscaled
-        mipmap: view.viewScale < 1
+        // Fixed: Qt cannot rebuild mipmaps for an already uploaded texture.
+        mipmap: true
         anchors.centerIn: parent
         // Laid out at the texture's real size, whatever size it was decoded at.
         width: padder.imageWidth * view.viewScale
@@ -295,7 +299,7 @@ ApplicationWindow {
         horizontalAlignment: Text.AlignHCenter
         font.pixelSize: 20
         opacity: 0.8
-        text: "Drop a PNG texture here\n\nor press Ctrl+O to browse"
+        text: "Drop a texture here\n\nor press Ctrl+O to browse"
     }
 
     BusyIndicator {

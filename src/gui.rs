@@ -4,6 +4,9 @@
 //! background thread and writes a temporary preview PNG, which the window
 //! shows. Saving copies that file (or re-encodes it with the chosen
 //! compression) to wherever the user picks in the file dialog.
+//!
+//! Inputs that are not PNGs are also shown through a temporary PNG, so the
+//! preview never depends on which Qt image format plugins are installed.
 
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
@@ -14,7 +17,7 @@ use anyhow::{Context, Result};
 use cxx_qt::{CxxQtType, Threading};
 use cxx_qt_lib::{QGuiApplication, QQmlApplicationEngine, QString, QUrl};
 
-use crate::{default_output, run, Level};
+use crate::{check_output, default_output, is_png, load, pad, run, write_rgba, Level};
 
 #[cxx_qt::bridge]
 pub mod qobject {
@@ -32,6 +35,7 @@ pub mod qobject {
         #[qproperty(QString, status)]
         #[qproperty(bool, failed)]
         #[qproperty(QUrl, input_url, cxx_name = "inputUrl")]
+        #[qproperty(QUrl, input_preview_url, cxx_name = "inputPreviewUrl")]
         #[qproperty(QUrl, output_url, cxx_name = "outputUrl")]
         #[qproperty(QUrl, suggested_url, cxx_name = "suggestedUrl")]
         #[qproperty(QUrl, input_folder, cxx_name = "inputFolder")]
@@ -41,7 +45,7 @@ pub mod qobject {
         #[qproperty(i32, compression)]
         type Padder = super::PadderRust;
 
-        /// Pads the PNG at `url` and shows the result.
+        /// Pads the image at `url` and shows the result.
         #[qinvokable]
         fn process(self: Pin<&mut Padder>, url: &QUrl);
 
@@ -61,17 +65,27 @@ pub mod qobject {
 /// Image passed as `uvpad --gui <INPUT>`.
 static STARTUP: OnceLock<std::sync::Mutex<Option<PathBuf>>> = OnceLock::new();
 
-/// The padded preview of one input, kept in the temp directory until replaced.
-struct Preview {
-    input: PathBuf,
-    file: PathBuf,
-    slower: bool,
+/// A file in the temp directory, deleted when dropped.
+struct TempFile(PathBuf);
+
+impl TempFile {
+    fn new(job: u64, what: &str) -> Self {
+        let name = format!("uvpad-{what}-{}-{job}.png", std::process::id());
+        Self(std::env::temp_dir().join(name))
+    }
 }
 
-impl Drop for Preview {
+impl Drop for TempFile {
     fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.file);
+        let _ = std::fs::remove_file(&self.0);
     }
+}
+
+/// The padded preview of one input, kept until replaced.
+struct Preview {
+    input: PathBuf,
+    file: TempFile,
+    slower: bool,
 }
 
 #[derive(Default)]
@@ -80,6 +94,8 @@ pub struct PadderRust {
     status: QString,
     failed: bool,
     input_url: QUrl,
+    /// What the window shows as the input: the input itself if it is a PNG.
+    input_preview_url: QUrl,
     output_url: QUrl,
     suggested_url: QUrl,
     input_folder: QUrl,
@@ -91,6 +107,8 @@ pub struct PadderRust {
     compression: i32,
 
     preview: Option<Preview>,
+    /// The PNG copy behind `input_preview_url`, for inputs that are not PNGs.
+    input_preview: Option<TempFile>,
     /// Bumped by every job, so results of superseded jobs are dropped.
     job: u64,
 }
@@ -111,18 +129,6 @@ fn to_path(url: &QUrl) -> Option<PathBuf> {
 
 fn to_url(path: &Path) -> QUrl {
     QUrl::from_local_file(&QString::from(path.to_string_lossy().as_ref()))
-}
-
-fn preview_file(job: u64) -> PathBuf {
-    std::env::temp_dir().join(format!("uvpad-preview-{}-{job}.png", std::process::id()))
-}
-
-/// Width and height from the PNG header, without decoding the image.
-fn png_size(path: &Path) -> Option<(i32, i32)> {
-    let file = std::fs::File::open(path).ok()?;
-    let reader = png::Decoder::new(std::io::BufReader::new(file)).read_info().ok()?;
-    let info = reader.info();
-    Some((info.width.try_into().ok()?, info.height.try_into().ok()?))
 }
 
 fn file_name(path: &Path) -> String {
@@ -153,22 +159,49 @@ impl qobject::Padder {
         let slower = *self.slower();
         let job = self.as_mut().next_job();
 
+        // A different image: clear the old one rather than show it at the new size.
+        // (Re-padding the same image keeps it on screen until the new result.)
+        let same = self.rust().preview.as_ref().is_some_and(|p| p.input == input);
+        if !same {
+            self.as_mut().set_image_width(0);
+            self.as_mut().set_image_height(0);
+            self.as_mut().set_input_preview_url(QUrl::default());
+            self.as_mut().set_output_url(QUrl::default());
+        }
         self.as_mut().set_input_url(to_url(&input));
         if let Some(dir) = input.parent() {
             self.as_mut().set_input_folder(to_url(dir));
         }
         self.as_mut().set_suggested_url(to_url(&default_output(&input)));
-        let (width, height) = png_size(&input).unwrap_or((0, 0));
-        self.as_mut().set_image_width(width);
-        self.as_mut().set_image_height(height);
         self.as_mut().report(true, false, format!("Padding {}…", file_name(&input)));
 
         let thread = self.qt_thread();
         std::thread::spawn(move || {
-            let file = preview_file(job);
             let start = Instant::now();
-            // The preview only lives in the temp directory, so encode it fast.
-            let result = run(&input, &file, slower, Level::Fast);
+            // The previews only live in the temp directory, so encode them fast.
+            let file = TempFile::new(job, "output");
+            let mut input_preview = None;
+            let result = (|| {
+                let img = load(&input)?;
+                let shown = if is_png(&input) {
+                    input.clone()
+                } else {
+                    let temp = TempFile::new(job, "input");
+                    write_rgba(&temp.0, &img, Level::Fast)
+                        .context("failed to write the input preview")?;
+                    input_preview.insert(temp).0.clone()
+                };
+                // Show the input while it is being padded.
+                let (width, height) = (img.width as i32, img.height as i32);
+                let _ = thread.queue(move |mut padder| {
+                    if padder.rust().job == job {
+                        padder.as_mut().set_image_width(width);
+                        padder.as_mut().set_image_height(height);
+                        padder.as_mut().set_input_preview_url(to_url(&shown));
+                    }
+                });
+                pad(img, &file.0, slower, Level::Fast)
+            })();
             let elapsed = start.elapsed();
             let preview = Preview {
                 input,
@@ -177,8 +210,9 @@ impl qobject::Padder {
             };
             let _ = thread.queue(move |mut padder| {
                 if padder.rust().job != job {
-                    return; // superseded; `preview` is dropped, which deletes its file
+                    return; // superseded; dropping the previews deletes their files
                 }
+                padder.as_mut().rust_mut().input_preview = input_preview;
                 match result {
                     Ok(()) => {
                         let status = format!(
@@ -186,7 +220,7 @@ impl qobject::Padder {
                             file_name(&preview.input),
                             if slower { " (GIMP UVPad)" } else { "" },
                         );
-                        padder.as_mut().set_output_url(to_url(&preview.file));
+                        padder.as_mut().set_output_url(to_url(&preview.file.0));
                         padder.as_mut().rust_mut().preview = Some(preview);
                         padder.report(false, false, status);
                     }
@@ -205,11 +239,15 @@ impl qobject::Padder {
             self.report(false, true, "Can only save to a local file".into());
             return;
         };
+        if let Err(e) = check_output(&dest) {
+            self.report(false, true, format!("{e:#}"));
+            return;
+        }
         let Some(preview) = &self.rust().preview else {
             self.report(false, true, "Nothing to save yet".into());
             return;
         };
-        let (input, file, slower) = (preview.input.clone(), preview.file.clone(), preview.slower);
+        let (input, file, slower) = (preview.input.clone(), preview.file.0.clone(), preview.slower);
         let level = level(*self.compression());
         let job = self.as_mut().next_job();
         self.as_mut().report(true, false, format!("Saving {}…", file_name(&dest)));
@@ -274,7 +312,7 @@ pub fn launch(input: Option<PathBuf>) -> Result<()> {
         engine.load(&QUrl::from(&QString::from("qrc:/qt/qml/uvpad/qml/main.qml")));
     }
     let code = app.as_mut().map_or(1, |app| app.exec());
-    drop(engine); // destroys the Padder, and with it the preview file
+    drop(engine); // destroys the Padder, and with it the preview files
     if code != 0 {
         anyhow::bail!("Qt exited with code {code}");
     }

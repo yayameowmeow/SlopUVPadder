@@ -12,7 +12,7 @@
 
 use std::collections::BTreeMap;
 use std::fs::File;
-use std::io::{self, BufReader, BufWriter, Write};
+use std::io::{self, BufReader, BufWriter, Read, Seek, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
@@ -29,7 +29,8 @@ mod gui;
 #[derive(Parser)]
 #[command(name = "uvpad", version)]
 struct Cli {
-    /// Input PNG image (optional with --gui)
+    /// Input image: PNG, JPEG, JPEG XL, WebP, TGA, TIFF, BMP, GIF, EXR, HDR, DDS, QOI, ICO, PNM
+    /// (and AVIF when built with `--features avif`). Optional with --gui
     #[arg(required_unless_present = "gui")]
     input: Option<PathBuf>,
 
@@ -37,7 +38,7 @@ struct Cli {
     #[arg(long)]
     gui: bool,
 
-    /// Output image file [default: <input>_padded.<ext>]
+    /// Output PNG file [default: <input>_padded.png]
     #[arg(long, value_name = "FILE")]
     output: Option<PathBuf>,
 
@@ -85,29 +86,42 @@ fn launch_gui(_input: Option<PathBuf>) -> Result<()> {
     bail!("this uvpad was built without the Qt interface; rebuild it with `--features gui`")
 }
 
-/// `dir/name.png` -> `dir/name_padded.png`
+/// `dir/name.ext` -> `dir/name_padded.png`; the output is always a PNG.
 fn default_output(input: &Path) -> PathBuf {
     let mut name = input.file_stem().unwrap_or_default().to_os_string();
-    name.push("_padded");
-    if let Some(ext) = input.extension() {
-        name.push(".");
-        name.push(ext);
-    }
+    name.push("_padded.png");
     input.with_file_name(name)
 }
 
+/// The output is always a PNG, so refuse names that promise another format.
+fn check_output(output: &Path) -> Result<()> {
+    match output.extension() {
+        Some(ext) if !ext.eq_ignore_ascii_case("png") => bail!(
+            "the output is always a PNG, so {} needs a .png extension",
+            output.display()
+        ),
+        _ => Ok(()),
+    }
+}
+
 fn run(input: &Path, output: &Path, slower: bool, level: Level) -> Result<()> {
-    let mut img = load(input)?;
+    check_output(output)?;
+    pad(load(input)?, output, slower, level)
+}
+
+/// Pads `img` and writes it to `output` as an RGB PNG.
+fn pad(mut img: Rgba, output: &Path, slower: bool, level: Level) -> Result<()> {
     let rows = band_rows(img.width);
     let (w, h) = (img.width, img.height);
+    let rgb = png::ColorType::Rgb;
     let result = if slower {
         fill_gimp(&mut img)?;
-        write_png(output, w, h, rows, level, |b, out| {
+        write_png(output, w, h, rows, level, rgb, |b, out| {
             rgb_band(&img, rows, b, out)
         })
     } else {
         column_nearest(&mut img, rows)?;
-        write_png(output, w, h, rows, level, |b, out| {
+        write_png(output, w, h, rows, level, rgb, |b, out| {
             nearest_band(&img, rows, b, out)
         })
     };
@@ -125,17 +139,81 @@ struct Rgba {
     px: Vec<u8>,
 }
 
-/// 16-bit PNGs are reduced to 8 bits first, so alpha >= 0xff00 counts as opaque.
+const PNG_SIGNATURE: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+
+/// The first bytes of a file (fewer if it is shorter).
+fn magic(file: &mut File) -> io::Result<Vec<u8>> {
+    let mut head = Vec::with_capacity(12);
+    Read::take(&mut *file, 12).read_to_end(&mut head)?;
+    file.rewind()?;
+    Ok(head)
+}
+
+fn is_jxl(head: &[u8]) -> bool {
+    // Bare codestream, or the ISO BMFF container.
+    head.starts_with(&[0xFF, 0x0A])
+        || head.starts_with(&[0, 0, 0, 0x0C, b'J', b'X', b'L', b' ', 0x0D, 0x0A, 0x87, 0x0A])
+}
+
+/// Whether `path` is a PNG, judged by its content.
+#[cfg_attr(not(feature = "gui"), allow(dead_code))]
+fn is_png(path: &Path) -> bool {
+    File::open(path)
+        .and_then(|mut f| magic(&mut f))
+        .is_ok_and(|head| head.starts_with(&PNG_SIGNATURE))
+}
+
+/// Decodes any supported format to 8-bit RGBA. The format is detected from the
+/// content; the extension only matters for formats without a signature (TGA).
 fn load(path: &Path) -> Result<Rgba> {
-    let file = File::open(path)
+    let mut file = File::open(path)
         .with_context(|| format!("failed to open input file {}", path.display()))?;
+    let head = magic(&mut file)
+        .with_context(|| format!("failed to read input file {}", path.display()))?;
+    let img = if head.starts_with(&PNG_SIGNATURE) {
+        load_png(file)
+    } else {
+        load_other(file, &head, path)
+    };
+    img.with_context(|| format!("failed to decode input image {}", path.display()))
+}
+
+/// Everything but PNG, through the `image` crate (and `jxl-oxide` for JPEG XL).
+/// 16-bit and float images are converted to 8 bits per channel.
+fn load_other(file: File, head: &[u8], path: &Path) -> Result<Rgba> {
+    let reader = BufReader::with_capacity(1 << 20, file);
+    let img = if is_jxl(head) {
+        image::DynamicImage::from_decoder(jxl_oxide::integration::JxlDecoder::new(reader)?)?
+    } else {
+        let mut reader = image::ImageReader::new(reader);
+        if let Ok(format) = image::ImageFormat::from_path(path) {
+            reader.set_format(format);
+        }
+        let mut reader = reader.with_guessed_format()?;
+        if reader.format().is_none() {
+            bail!("unsupported image format");
+        }
+        // The default limits refuse textures over 512 MB.
+        reader.no_limits();
+        reader.decode()?
+    };
+    // A no-op for RGBA8 images, which keeps the single-buffer memory profile.
+    let rgba = img.into_rgba8();
+    Ok(Rgba {
+        width: rgba.width() as usize,
+        height: rgba.height() as usize,
+        px: rgba.into_raw(),
+    })
+}
+
+/// 16-bit PNGs are reduced to 8 bits first, so alpha >= 0xff00 counts as opaque.
+fn load_png(file: File) -> Result<Rgba> {
     let mut decoder = png::Decoder::new(BufReader::with_capacity(1 << 20, file));
     decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
 
-    let decode_err = || format!("failed to decode input image {}", path.display());
-    let mut reader = decoder.read_info().with_context(decode_err)?;
+    let mut reader = decoder.read_info()?;
     let mut raw = vec![0u8; reader.output_buffer_size()];
-    let info = reader.next_frame(&mut raw).with_context(decode_err)?;
+    let info = reader.next_frame(&mut raw)?;
     drop(reader);
     raw.truncate(info.buffer_size());
 
@@ -567,20 +645,33 @@ fn pipeline<W: Write>(
     })
 }
 
-/// The padded image is always fully opaque, so it is written as RGB.
+/// Writes `img` unchanged, alpha included (the GUI's preview of non-PNG inputs).
+#[cfg_attr(not(feature = "gui"), allow(dead_code))]
+fn write_rgba(path: &Path, img: &Rgba, level: Level) -> Result<()> {
+    let (w, h) = (img.width, img.height);
+    let rows = band_rows(w);
+    write_png(path, w, h, rows, level, png::ColorType::Rgba, |b, out| {
+        out.clear();
+        out.extend_from_slice(&img.px[b * rows * w * 4..((b + 1) * rows).min(h) * w * 4]);
+    })
+}
+
+/// Encodes the rows `produce` makes, `rows` image rows per band, as 8-bit
+/// `color` (RGB for padded images, which are always fully opaque).
 fn write_png(
     path: &Path,
     width: usize,
     height: usize,
     rows: usize,
     level: Level,
+    color: png::ColorType,
     produce: impl Fn(usize, &mut Vec<u8>) + Sync,
 ) -> Result<()> {
     let file = File::create(path).context("failed to create output file")?;
     let mut sink = BufWriter::with_capacity(1 << 20, file);
     {
         let mut encoder = png::Encoder::new(&mut sink, width as u32, height as u32);
-        encoder.set_color(png::ColorType::Rgb);
+        encoder.set_color(color);
         encoder.set_depth(png::BitDepth::Eight);
         encoder.set_compression(match level {
             Level::Fast => png::Compression::Fast,
@@ -664,15 +755,27 @@ mod tests {
             default_output(Path::new("a/b/tex.png")),
             Path::new("a/b/tex_padded.png")
         );
-        assert_eq!(default_output(Path::new("tex")), Path::new("tex_padded"));
+        assert_eq!(default_output(Path::new("tex")), Path::new("tex_padded.png"));
         assert_eq!(
             default_output(Path::new("a.b/tex")),
-            Path::new("a.b/tex_padded")
+            Path::new("a.b/tex_padded.png")
+        );
+        assert_eq!(
+            default_output(Path::new("photo.JPG")),
+            Path::new("photo_padded.png")
         );
         assert_eq!(
             default_output(Path::new("x.tar.png")),
             Path::new("x.tar_padded.png")
         );
+    }
+
+    #[test]
+    fn output_must_be_png() {
+        assert!(check_output(Path::new("a/tex_padded.png")).is_ok());
+        assert!(check_output(Path::new("TEX.PNG")).is_ok());
+        assert!(check_output(Path::new("tex_padded")).is_ok());
+        assert!(check_output(Path::new("tex.jpg")).is_err());
     }
 
     #[test]
