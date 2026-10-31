@@ -61,7 +61,8 @@ runs:
           # A venv, as some runners' Pythons refuse system-wide pip installs.
           python=$(command -v python3 || command -v python)
           "$python" -m venv "$RUNNER_TEMP/aqt"
-          aqt_python=$(ls "$RUNNER_TEMP"/aqt/bin/python "$RUNNER_TEMP"/aqt/Scripts/python.exe 2> /dev/null | head -n 1)
+          aqt_python=$RUNNER_TEMP/aqt/bin/python
+          [[ -x $aqt_python ]] || aqt_python=$RUNNER_TEMP/aqt/Scripts/python.exe
           "$aqt_python" -m pip install --upgrade aqtinstall
           "$aqt_python" -m aqt install-qt ${{ inputs.qt-host }} desktop ${{ inputs.qt-version }} ${{ inputs.qt-arch }} --outputdir "$QT_DIR"
         fi
