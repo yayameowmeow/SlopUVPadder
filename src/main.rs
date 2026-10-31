@@ -22,12 +22,20 @@ use anyhow::{bail, Context, Result};
 use clap::{Parser, ValueEnum};
 use rayon::prelude::*;
 
+#[cfg(feature = "gui")]
+mod gui;
+
 /// Texture dilating tool
 #[derive(Parser)]
 #[command(name = "uvpad", version)]
 struct Cli {
-    /// Input PNG image
-    input: PathBuf,
+    /// Input PNG image (optional with --gui)
+    #[arg(required_unless_present = "gui")]
+    input: Option<PathBuf>,
+
+    /// Open the graphical interface: drop an image in, preview the result, save it
+    #[arg(long)]
+    gui: bool,
 
     /// Output image file [default: <input>_padded.<ext>]
     #[arg(long, value_name = "FILE")]
@@ -51,16 +59,30 @@ enum Level {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+    if cli.gui {
+        return launch_gui(cli.input);
+    }
+    let input = cli.input.expect("clap requires INPUT without --gui");
     let output = cli
         .output
         .filter(|p| !p.as_os_str().is_empty())
-        .unwrap_or_else(|| default_output(&cli.input));
+        .unwrap_or_else(|| default_output(&input));
 
     let start = Instant::now();
-    run(&cli.input, &output, cli.slower, cli.compression)?;
+    run(&input, &output, cli.slower, cli.compression)?;
     println!("Execution time: {:?}", start.elapsed());
     println!("Saved padded image to {}", output.display());
     Ok(())
+}
+
+#[cfg(feature = "gui")]
+fn launch_gui(input: Option<PathBuf>) -> Result<()> {
+    gui::launch(input)
+}
+
+#[cfg(not(feature = "gui"))]
+fn launch_gui(_input: Option<PathBuf>) -> Result<()> {
+    bail!("this uvpad was built without the Qt interface; rebuild it with `--features gui`")
 }
 
 /// `dir/name.png` -> `dir/name_padded.png`

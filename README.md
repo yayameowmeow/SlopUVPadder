@@ -18,6 +18,21 @@ This is a Rust port of [meir/uvpad](https://github.com/meir/uvpad), which is bas
 cargo install --path .
 ```
 
+### With the Qt interface
+
+The graphical interface is an optional feature, so the plain CLI never needs Qt. It needs Qt 6 (Base and Declarative/QML) and a C++ compiler at build time:
+
+- **Arch Linux:** `sudo pacman -S --needed qt6-base qt6-declarative base-devel`
+- **Debian/Ubuntu:** `sudo apt install qt6-base-dev qt6-declarative-dev qml6-module-qtquick-controls qml6-module-qtquick-dialogs qml6-module-qtquick-layouts qml6-module-qtquick-window`
+- **macOS:** `brew install qt`
+- **Windows:** install Qt 6 with the [Qt online installer](https://www.qt.io/download-qt-installer) (MSVC kit) and put its `bin` directory, which holds `qmake6.exe`, on `PATH`.
+
+```
+cargo install --path . --features gui
+```
+
+The build finds Qt through `qmake6`/`qmake` on `PATH`; set `QMAKE=/path/to/qmake6` to pick a specific install.
+
 ## Usage
 
 ```
@@ -30,9 +45,10 @@ This writes `./image_padded.png` next to the input.
 Usage: uvpad [OPTIONS] <INPUT>
 
 Arguments:
-  <INPUT>  Input PNG image
+  <INPUT>  Input PNG image (optional with --gui)
 
 Options:
+      --gui                      Open the graphical interface: drop an image in, preview the result, save it
       --output <FILE>            Output image file [default: <input>_padded.<ext>]
       --slower                   Use the GIMP UVPad look (iterated neighbour averaging) instead of nearest-pixel fill
       --compression <COMPRESSION>  PNG compression of the output: fast is quickest, best is smallest [default: fast] [possible values: fast, default, best]
@@ -41,6 +57,22 @@ Options:
 ```
 
 Input must be a PNG, and the output is always a PNG (RGB, since the result is fully opaque).
+
+### GUI
+
+```
+uvpad --gui              # empty window
+uvpad --gui ./image.png  # opens with this image already padded
+```
+
+Drag a PNG onto the window (or press Ctrl+O). It is padded straight away and the result is shown; save it with **Save…** (Ctrl+S), which opens the system file dialog with `<input>_padded.png` filled in.
+
+- **Method** switches between nearest-pixel and GIMP UVPad (`--slower`) and re-pads the image.
+- **Compression** applies to the saved file.
+- **Input / Output** (or Space) flips between the original and the padded image at the same zoom.
+- Mouse wheel or pinch zooms around the pointer, drag pans, double-click or `0` fits the image again. Pixels are shown unsmoothed when zoomed in, so the padded edges can be inspected.
+
+The preview is written to the system temp directory and deleted when the window closes. The style is Qt's Fusion, which follows the desktop's light/dark palette; set `QT_QUICK_CONTROLS_STYLE` to use another one. On Linux the file dialogs are native when a Qt platform theme is active (Plasma, or `QT_QPA_PLATFORMTHEME=xdgdesktopportal` elsewhere); otherwise Qt's own dialog is used.
 
 ## Algorithms
 
