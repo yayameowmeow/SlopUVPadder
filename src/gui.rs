@@ -1,4 +1,6 @@
-//! Qt Quick UI, started with `uvpad --gui`.
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+//! Qt Quick UI, opened when uvpad is started without an input (or with --gui).
 //!
 //! The window (qml/main.qml) talks to one `Padder` object. Padding runs on a
 //! background thread and writes a temporary preview PNG, which the window
@@ -33,8 +35,9 @@ pub mod qobject {
         include!("uvpad/src/app.h");
         type QApplication;
 
-        fn uvpad_new_application(version: &str) -> UniquePtr<QApplication>;
+        fn uvpad_new_application(version: &str, icon_png: &[u8]) -> UniquePtr<QApplication>;
         fn uvpad_exec() -> i32;
+        fn uvpad_copy_png(png: &[u8], with_image: bool);
     }
 
     extern "RustQt" {
@@ -61,6 +64,11 @@ pub mod qobject {
         /// Writes the shown result to `url`.
         #[qinvokable]
         fn save(self: Pin<&mut Padder>, url: &QUrl);
+
+        /// Puts the shown result on the clipboard.
+        #[qinvokable]
+        #[cxx_name = "copyOutput"]
+        fn copy_output(self: Pin<&mut Padder>);
 
         /// The image given on the command line, if any (only returned once).
         #[qinvokable]
@@ -170,7 +178,11 @@ impl qobject::Padder {
 
         // A different image: clear the old one rather than show it at the new size.
         // (Re-padding the same image keeps it on screen until the new result.)
-        let same = self.rust().preview.as_ref().is_some_and(|p| p.input == input);
+        let same = self
+            .rust()
+            .preview
+            .as_ref()
+            .is_some_and(|p| p.input == input);
         if !same {
             self.as_mut().set_image_width(0);
             self.as_mut().set_image_height(0);
@@ -181,8 +193,10 @@ impl qobject::Padder {
         if let Some(dir) = input.parent() {
             self.as_mut().set_input_folder(to_url(dir));
         }
-        self.as_mut().set_suggested_url(to_url(&default_output(&input)));
-        self.as_mut().report(true, false, format!("Padding {}…", file_name(&input)));
+        self.as_mut()
+            .set_suggested_url(to_url(&default_output(&input)));
+        self.as_mut()
+            .report(true, false, format!("Padding {}…", file_name(&input)));
 
         let thread = self.qt_thread();
         std::thread::spawn(move || {
@@ -256,10 +270,15 @@ impl qobject::Padder {
             self.report(false, true, "Nothing to save yet".into());
             return;
         };
-        let (input, file, slower) = (preview.input.clone(), preview.file.0.clone(), preview.slower);
+        let (input, file, slower) = (
+            preview.input.clone(),
+            preview.file.0.clone(),
+            preview.slower,
+        );
         let level = level(*self.compression());
         let job = self.as_mut().next_job();
-        self.as_mut().report(true, false, format!("Saving {}…", file_name(&dest)));
+        self.as_mut()
+            .report(true, false, format!("Saving {}…", file_name(&dest)));
 
         let thread = self.qt_thread();
         std::thread::spawn(move || {
@@ -283,6 +302,35 @@ impl qobject::Padder {
         });
     }
 
+    pub fn copy_output(mut self: Pin<&mut Self>) {
+        let Some(preview) = &self.rust().preview else {
+            self.report(false, true, "Nothing to copy yet".into());
+            return;
+        };
+        let file = preview.file.0.clone();
+        // Decoding for the bitmap copy is slow and memory hungry on big
+        // textures, so those only go on the clipboard as a PNG.
+        let with_image =
+            i64::from(*self.image_width()) * i64::from(*self.image_height()) <= 4096 * 4096;
+        self.as_mut().report(true, false, "Copying…".into());
+
+        let thread = self.qt_thread();
+        std::thread::spawn(move || {
+            let result = std::fs::read(&file);
+            let _ = thread.queue(move |padder| match result {
+                Ok(png) => {
+                    qobject::uvpad_copy_png(&png, with_image);
+                    padder.report(
+                        false,
+                        false,
+                        "Copied the padded image to the clipboard".into(),
+                    );
+                }
+                Err(e) => padder.report(false, true, format!("failed to copy: {e}")),
+            });
+        });
+    }
+
     pub fn take_startup_url(&self) -> QUrl {
         STARTUP
             .get()
@@ -292,7 +340,28 @@ impl qobject::Padder {
     }
 }
 
+/// A double-clicked uvpad.exe gets a console window of its own: close it.
+/// Started from a terminal, the console is shared and stays.
+#[cfg(windows)]
+fn close_own_console() {
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetConsoleProcessList(list: *mut u32, count: u32) -> u32;
+        fn FreeConsole() -> i32;
+    }
+    let mut processes = [0u32; 2];
+    // SAFETY: plain Win32 calls; the buffer is as long as the count passed.
+    unsafe {
+        if GetConsoleProcessList(processes.as_mut_ptr(), 2) == 1 {
+            FreeConsole();
+        }
+    }
+}
+
 pub fn launch(input: Option<PathBuf>) -> Result<()> {
+    #[cfg(windows)]
+    close_own_console();
+
     let input = input
         .map(|p| std::path::absolute(&p).unwrap_or(p))
         .filter(|p| !p.as_os_str().is_empty());
@@ -309,10 +378,14 @@ pub fn launch(input: Option<PathBuf>) -> Result<()> {
     // Failures still show in the window. Later rules win, so the user's
     // QT_LOGGING_RULES can turn them back on.
     let rules = std::env::var("QT_LOGGING_RULES").unwrap_or_default();
-    std::env::set_var(
-        "QT_LOGGING_RULES",
-        format!("qt.gui.imageio=false;{rules}"),
-    );
+    std::env::set_var("QT_LOGGING_RULES", format!("qt.gui.imageio=false;{rules}"));
+
+    // An AppImage brings its own Qt, which cannot load the desktop's platform
+    // theme plugin (KDE's, say); the portal still gives the desktop's dialogs.
+    if std::env::var_os("APPIMAGE").is_some() && std::env::var_os("QT_QPA_PLATFORMTHEME").is_none()
+    {
+        std::env::set_var("QT_QPA_PLATFORMTHEME", "xdgdesktopportal");
+    }
 
     // Fusion follows the desktop's palette (light/dark) on every OS; the user
     // can still pick another style with QT_QUICK_CONTROLS_STYLE.
@@ -320,13 +393,16 @@ pub fn launch(input: Option<PathBuf>) -> Result<()> {
         std::env::set_var("QT_QUICK_CONTROLS_STYLE", "Fusion");
     }
 
-    let app = qobject::uvpad_new_application(env!("CARGO_PKG_VERSION"));
+    let icon = include_bytes!("../assets/uvpad-256.png");
+    let app = qobject::uvpad_new_application(env!("CARGO_PKG_VERSION"), icon);
     if app.is_null() {
         anyhow::bail!("failed to start Qt");
     }
     let mut engine = QQmlApplicationEngine::new();
     if let Some(engine) = engine.as_mut() {
-        engine.load(&QUrl::from(&QString::from("qrc:/qt/qml/uvpad/qml/main.qml")));
+        engine.load(&QUrl::from(&QString::from(
+            "qrc:/qt/qml/uvpad/qml/main.qml",
+        )));
     }
     let code = qobject::uvpad_exec();
     drop(engine); // destroys the Padder, and with it the preview files

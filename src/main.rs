@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! uvpad: texture dilating (UV padding) tool.
 //!
 //! A Rust port of <https://github.com/meir/uvpad>, tuned for speed and memory.
@@ -30,11 +32,11 @@ mod gui;
 #[command(name = "uvpad", version)]
 struct Cli {
     /// Input image: PNG, JPEG, JPEG XL, WebP, TGA, TIFF, BMP, GIF, EXR, HDR, DDS, QOI, ICO, PNM
-    /// (and AVIF when built with `--features avif`). Optional with --gui
-    #[arg(required_unless_present = "gui")]
+    /// (and AVIF when built with `--features avif`). Without one, the window opens
+    #[cfg_attr(not(feature = "gui"), arg(required_unless_present = "gui"))]
     input: Option<PathBuf>,
 
-    /// Open the graphical interface: drop an image in, preview the result, save it
+    /// Open the graphical interface (with INPUT already loaded, if given)
     #[arg(long)]
     gui: bool,
 
@@ -60,10 +62,11 @@ enum Level {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    if cli.gui {
-        return launch_gui(cli.input);
-    }
-    let input = cli.input.expect("clap requires INPUT without --gui");
+    let input = match cli.input {
+        Some(input) if !cli.gui => input,
+        // Also how a double-clicked or desktop-launched uvpad starts.
+        input => return launch_gui(input),
+    };
     let output = cli
         .output
         .filter(|p| !p.as_os_str().is_empty())
@@ -152,7 +155,9 @@ fn magic(file: &mut File) -> io::Result<Vec<u8>> {
 fn is_jxl(head: &[u8]) -> bool {
     // Bare codestream, or the ISO BMFF container.
     head.starts_with(&[0xFF, 0x0A])
-        || head.starts_with(&[0, 0, 0, 0x0C, b'J', b'X', b'L', b' ', 0x0D, 0x0A, 0x87, 0x0A])
+        || head.starts_with(&[
+            0, 0, 0, 0x0C, b'J', b'X', b'L', b' ', 0x0D, 0x0A, 0x87, 0x0A,
+        ])
 }
 
 /// Whether `path` is a PNG, judged by its content.
@@ -755,7 +760,10 @@ mod tests {
             default_output(Path::new("a/b/tex.png")),
             Path::new("a/b/tex_padded.png")
         );
-        assert_eq!(default_output(Path::new("tex")), Path::new("tex_padded.png"));
+        assert_eq!(
+            default_output(Path::new("tex")),
+            Path::new("tex_padded.png")
+        );
         assert_eq!(
             default_output(Path::new("a.b/tex")),
             Path::new("a.b/tex_padded.png")

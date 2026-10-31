@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Dialogs
@@ -79,6 +81,11 @@ ApplicationWindow {
         onActivated: saveDialog.open()
     }
     Shortcut {
+        sequences: [StandardKey.Copy]
+        enabled: copyButton.enabled
+        onActivated: padder.copyOutput()
+    }
+    Shortcut {
         sequence: "Space"
         enabled: window.hasOutput
         onActivated: window.showOutput = !window.showOutput
@@ -145,6 +152,16 @@ ApplicationWindow {
             }
 
             ToolSeparator {}
+
+            Button {
+                id: copyButton
+                text: "Copy"
+                enabled: window.hasOutput && !padder.busy
+                onClicked: padder.copyOutput()
+                ToolTip.visible: hovered
+                ToolTip.delay: 600
+                ToolTip.text: "Copy the padded image to the clipboard (Ctrl+C)"
+            }
 
             Button {
                 id: saveButton
