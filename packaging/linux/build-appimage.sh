@@ -49,8 +49,6 @@ export QML_SOURCES_PATHS=$root/qml
 # Qt 6.10 merged the Wayland platform plugins into one libqwayland.so.
 wayland=$(cd "$plugins/platforms" && ls libqwayland*.so | paste -sd ';' -)
 export EXTRA_PLATFORM_PLUGINS=$wayland
-# The xdg-desktop-portal theme, which gives the desktop's own file dialogs.
-export DEPLOY_PLATFORM_THEMES=1
 # No FUSE needed (CI containers, distros without libfuse2).
 export APPIMAGE_EXTRACT_AND_RUN=1
 export LDAI_OUTPUT=$root/dist/uvpad-$version-linux-$arch.AppImage
@@ -74,9 +72,29 @@ for dir in wayland-shell-integration wayland-decoration-client wayland-graphics-
     deps+=(--deploy-deps-only "$appdir/usr/plugins/$dir")
 done
 
+# The xdg-desktop-portal platform theme, for the desktop's own file dialogs.
+# Only that one: the GTK 3 theme would bring all of GTK, cairo and pango from
+# the build distro, whose old libraries clash with the user's.
+mkdir -p "$appdir/usr/plugins/platformthemes"
+cp "$plugins/platformthemes/libqxdgdesktopportal.so" "$appdir/usr/plugins/platformthemes/"
+deps+=(--deploy-deps-only "$appdir/usr/plugins/platformthemes")
+
+# brotli comes from the system: the system's FreeType (never bundled) loads
+# the system's libbrotlidec, which fails against an older bundled
+# libbrotlicommon ("undefined symbol: BrotliSharedDictionaryDestroyInstance").
+rm -f "$appdir"/usr/lib/libbrotli*
+
 "$tools/linuxdeploy-$arch.AppImage" \
     --appdir "$appdir" \
     "${deps[@]}" \
+    --exclude-library 'libbrotli*' \
     --output appimage
+
+# Libraries that must come from the system, and the GTK stack (see above).
+leaked=$(cd "$appdir/usr/lib" && ls | grep -E '^lib(brotli|gtk-3|gdk-3|cairo|pango)' || true)
+if [[ -n $leaked ]]; then
+    echo "::error::bundled libraries that must come from the system: $leaked"
+    exit 1
+fi
 
 echo "Built $LDAI_OUTPUT"

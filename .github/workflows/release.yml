@@ -105,6 +105,15 @@ jobs:
           for _ in $(seq 50); do [[ -S $XDG_RUNTIME_DIR/uvpad-test ]] && break; sleep 0.2; done
           WAYLAND_DISPLAY=uvpad-test QT_QPA_PLATFORM=wayland \
             packaging/smoke-test.sh "dist/uvpad-$VERSION-linux-${{ matrix.arch }}.AppImage"
+      # And on a current distro: newer system libraries meeting the bundled
+      # (older) ones is where AppImages usually break.
+      - name: Smoke test AppImage (Arch Linux)
+        if: matrix.arch == 'x86_64'
+        run: |
+          docker run --rm -v "$PWD:/w" -w /w -e APPIMAGE_EXTRACT_AND_RUN=1 archlinux:latest bash -c "
+            pacman -Syu --noconfirm --needed xorg-server-xvfb mesa fontconfig freetype2 harfbuzz \
+              ttf-dejavu libx11 libxcb > /dev/null &&
+            packaging/smoke-test.sh xvfb-run -a dist/uvpad-$VERSION-linux-x86_64.AppImage"
 
       - name: Build CLI
         run: cargo build --locked --release --features avif --target-dir target/cli
